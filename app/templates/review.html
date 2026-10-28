@@ -13,6 +13,9 @@
       <span class="badge {{ sheet.status }}">{{ 'saved' if sheet.status == 'confirmed' else 'draft' }}</span>
     </div>
 
+    {% if sheet.source == 'whatsapp' %}
+      <p class="muted">From WhatsApp{% if sheet.caption %} · caption: “{{ sheet.caption }}”{% endif %}</p>
+    {% endif %}
     {% if sheet.parse_error %}
       <div class="alert error">Couldn't read automatically: {{ sheet.parse_error }} You can still type the lines in below.</div>
     {% endif %}

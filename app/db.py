@@ -40,7 +40,20 @@ CREATE TABLE IF NOT EXISTS entries (
 
 CREATE INDEX IF NOT EXISTS idx_entries_sheet ON entries(sheet_id);
 CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(entry_date);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 """
+
+# Columns added after the first release; applied to existing databases on startup.
+SHEET_COLUMNS = {
+    "source": "TEXT NOT NULL DEFAULT 'upload'",  # upload | whatsapp
+    "source_ref": "TEXT",                         # WhatsApp message id, used to ignore repeats
+    "source_chat": "TEXT",
+    "caption": "TEXT",
+}
 
 
 def now_iso() -> str:
@@ -85,14 +98,42 @@ def init_db() -> None:
     with session() as conn:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(sheets)")}
+        for name, ddl in SHEET_COLUMNS.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE sheets ADD COLUMN {name} {ddl}")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sheets_source_ref ON sheets(source_ref) WHERE source_ref IS NOT NULL"
+        )
 
 
-def create_sheet(conn, image_path: str) -> int:
+def create_sheet(conn, image_path: str, source: str = "upload", source_ref: str | None = None,
+                 source_chat: str | None = None, caption: str | None = None) -> int:
     cur = conn.execute(
-        "INSERT INTO sheets (image_path, created_at) VALUES (?, ?)",
-        (image_path, now_iso()),
+        """INSERT INTO sheets (image_path, created_at, source, source_ref, source_chat, caption)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (image_path, now_iso(), source, source_ref, source_chat, caption),
     )
     return cur.lastrowid
+
+
+def sheet_by_source_ref(conn, source_ref: str):
+    return conn.execute("SELECT * FROM sheets WHERE source_ref = ?", (source_ref,)).fetchone()
+
+
+def get_setting(conn, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_setting(conn, key: str, value: str | None) -> None:
+    if value is None:
+        conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+    else:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
 
 
 def update_sheet_meta(conn, sheet_id: int, **fields) -> None:

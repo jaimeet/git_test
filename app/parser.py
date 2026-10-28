@@ -57,7 +57,7 @@ reviewing your output will correct mistakes before anything is saved."""
 
 
 class SheetParser(Protocol):
-    def parse(self, image_bytes: bytes) -> ParsedSheet: ...
+    def parse(self, image_bytes: bytes, hint: str | None = None) -> ParsedSheet: ...
 
 
 class ParseError(Exception):
@@ -82,8 +82,11 @@ class ClaudeSheetParser:
     def __init__(self, client: anthropic.Anthropic | None = None):
         self.client = client or anthropic.Anthropic()
 
-    def parse(self, image_bytes: bytes) -> ParsedSheet:
+    def parse(self, image_bytes: bytes, hint: str | None = None) -> ParsedSheet:
         data, media_type = prepare_image(image_bytes)
+        instruction = "Transcribe this hisab sheet."
+        if hint:
+            instruction += f"\n\nThe person who sent the photo added this caption (it may give the date or context):\n{hint}"
         try:
             response = self.client.beta.messages.parse(
                 model=config.ANTHROPIC_MODEL,
@@ -106,7 +109,7 @@ class ClaudeSheetParser:
                                     "data": base64.standard_b64encode(data).decode("ascii"),
                                 },
                             },
-                            {"type": "text", "text": "Transcribe this hisab sheet."},
+                            {"type": "text", "text": instruction},
                         ],
                     }
                 ],

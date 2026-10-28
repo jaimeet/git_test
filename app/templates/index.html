@@ -26,6 +26,7 @@
         <img src="/images/{{ s.image_path }}" alt="" loading="lazy">
         <div>
           <strong>{{ s.sheet_date or s.created_at[:10] }}</strong>
+          {% if s.source == 'whatsapp' %}<span class="badge">WhatsApp</span>{% endif %}
           <span class="badge {{ s.status }}">{{ 'saved' if s.status == 'confirmed' else ('needs attention' if s.parse_error else 'to review') }}</span>
           <div class="muted">{{ s.entry_count }} lines · in {{ s.total_in|money }} · out {{ s.total_out|money }}</div>
         </div>

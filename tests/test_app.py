@@ -40,8 +40,9 @@ class FakeParser:
     def __init__(self, result=SAMPLE, error=None):
         self.result, self.error, self.calls = result, error, 0
 
-    def parse(self, image_bytes):
+    def parse(self, image_bytes, hint=None):
         self.calls += 1
+        self.last_hint = hint
         if self.error:
             raise ParseError(self.error)
         return self.result
@@ -227,7 +228,7 @@ def test_claude_parser_without_api_key(monkeypatch, tmp_path):
 
 def test_unexpected_parser_crash_is_recorded(client):
     class Boom:
-        def parse(self, image_bytes):
+        def parse(self, image_bytes, hint=None):
             raise RuntimeError("kaboom")
 
     set_parser(Boom())

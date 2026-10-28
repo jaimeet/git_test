@@ -1,25 +1,22 @@
 import base64
 import csv
 import io
-import logging
 import secrets
-import uuid
 from contextlib import asynccontextmanager
-from datetime import date
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import config, db
-from .parser import ParsedSheet, ParseError, get_parser
+from . import config, db, whatsapp
+from .ingest import checks, money, parse_into_sheet, save_image
 
 APP_DIR = Path(__file__).parent
-log = logging.getLogger("hisab")
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -30,15 +27,6 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Hisab", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=APP_DIR / "templates")
-
-
-def money(paise) -> str:
-    value = db.from_paise(paise)
-    if value is None:
-        return ""
-    return f"{config.CURRENCY}{value:,.2f}"
-
-
 templates.env.filters["money"] = money
 templates.env.globals["currency"] = config.CURRENCY
 templates.env.filters["rupees"] = lambda p: "" if p is None else f"{db.from_paise(p):.2f}"
@@ -46,7 +34,7 @@ templates.env.filters["rupees"] = lambda p: "" if p is None else f"{db.from_pais
 
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
-    if not config.APP_PASSWORD or request.url.path == "/healthz":
+    if not config.APP_PASSWORD or request.url.path in ("/healthz", "/whatsapp/webhook"):  # webhook has its own HMAC check
         return await call_next(request)
     header = request.headers.get("authorization", "")
     if header.lower().startswith("basic "):
@@ -82,57 +70,13 @@ async def upload(photo: UploadFile = File(...)):
     if len(content) > config.MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(413, f"Photo is larger than {config.MAX_UPLOAD_MB} MB.")
 
-    suffix = Path(photo.filename or "").suffix.lower() or ".jpg"
-    name = f"{date.today().isoformat()}-{uuid.uuid4().hex[:10]}{suffix}"
-    (config.IMAGES_DIR / name).write_bytes(content)
+    name = save_image(content, Path(photo.filename or "").suffix.lower() or ".jpg")
 
     with db.session() as conn:
         sheet_id = db.create_sheet(conn, name)
 
-    await run_in_threadpool(_parse_into_sheet, sheet_id, content)
+    await run_in_threadpool(parse_into_sheet, sheet_id, content)
     return RedirectResponse(f"/sheets/{sheet_id}", status_code=303)
-
-
-def _parse_into_sheet(sheet_id: int, content: bytes) -> None:
-    try:
-        parsed = get_parser().parse(content)
-    except Exception as exc:
-        if not isinstance(exc, ParseError):
-            log.exception("Unexpected error parsing sheet %s", sheet_id)
-        message = str(exc) if isinstance(exc, ParseError) else f"Unexpected error: {exc}"
-        with db.session() as conn:
-            db.update_sheet_meta(conn, sheet_id, parse_error=message)
-        return
-    _store_parsed(sheet_id, parsed)
-
-
-def _store_parsed(sheet_id: int, parsed: ParsedSheet) -> None:
-    entries = [
-        {
-            "entry_date": e.entry_date or parsed.sheet_date,
-            "description": e.description.strip() or (e.original_text or "").strip() or "(unreadable)",
-            "party": e.party,
-            "kind": e.kind,
-            "amount_paise": db.to_paise(abs(e.amount)),
-            "category": e.category,
-            "confidence": e.confidence,
-        }
-        for e in parsed.entries
-    ]
-    with db.session() as conn:
-        db.update_sheet_meta(
-            conn,
-            sheet_id,
-            sheet_date=parsed.sheet_date,
-            parse_error=None,
-            raw_json=parsed.model_dump_json(),
-            opening_balance_paise=db.to_paise(parsed.opening_balance),
-            closing_balance_paise=db.to_paise(parsed.closing_balance),
-            written_total_in_paise=db.to_paise(parsed.written_total_in),
-            written_total_out_paise=db.to_paise(parsed.written_total_out),
-            notes=parsed.notes,
-        )
-        db.replace_entries(conn, sheet_id, entries)
 
 
 def _sheet_or_404(conn, sheet_id: int):
@@ -140,28 +84,6 @@ def _sheet_or_404(conn, sheet_id: int):
     if sheet is None:
         raise HTTPException(404, "Sheet not found")
     return sheet
-
-
-def _checks(sheet, entries) -> list[str]:
-    """Cross-check parsed lines against totals written on the sheet."""
-    warnings = []
-    total_in = sum(e["amount_paise"] for e in entries if e["kind"] == "in")
-    total_out = sum(e["amount_paise"] for e in entries if e["kind"] == "out")
-    if sheet["written_total_in_paise"] is not None and sheet["written_total_in_paise"] != total_in:
-        warnings.append(f"Money-in lines add up to {money(total_in)} but the sheet says {money(sheet['written_total_in_paise'])}.")
-    if sheet["written_total_out_paise"] is not None and sheet["written_total_out_paise"] != total_out:
-        warnings.append(f"Money-out lines add up to {money(total_out)} but the sheet says {money(sheet['written_total_out_paise'])}.")
-    if sheet["opening_balance_paise"] is not None and sheet["closing_balance_paise"] is not None:
-        expected = sheet["opening_balance_paise"] + total_in - total_out
-        if expected != sheet["closing_balance_paise"]:
-            warnings.append(
-                f"Opening {money(sheet['opening_balance_paise'])} + in − out = {money(expected)}, "
-                f"but the closing balance written is {money(sheet['closing_balance_paise'])}."
-            )
-    low = sum(1 for e in entries if e["confidence"] == "low")
-    if low:
-        warnings.append(f"{low} line(s) were hard to read — highlighted below.")
-    return warnings
 
 
 @app.get("/sheets/{sheet_id}", response_class=HTMLResponse)
@@ -179,7 +101,7 @@ def review(request: Request, sheet_id: int):
             "entries": entries,
             "total_in": total_in,
             "total_out": total_out,
-            "warnings": _checks(sheet, entries),
+            "warnings": checks(sheet, entries),
         },
     )
 
@@ -244,7 +166,7 @@ async def reparse(sheet_id: int):
         sheet = _sheet_or_404(conn, sheet_id)
         db.update_sheet_meta(conn, sheet_id, status="draft", confirmed_at=None)
     content = (config.IMAGES_DIR / sheet["image_path"]).read_bytes()
-    await run_in_threadpool(_parse_into_sheet, sheet_id, content)
+    await run_in_threadpool(parse_into_sheet, sheet_id, content)
     return RedirectResponse(f"/sheets/{sheet_id}", status_code=303)
 
 
@@ -333,3 +255,77 @@ def entries_json(date_from: str = "", date_to: str = "", q: str = ""):
             for r in rows
         ],
     })
+
+
+# ---------- WhatsApp ----------
+
+
+@app.post("/whatsapp/webhook")
+async def whatsapp_webhook(request: Request, background: BackgroundTasks):
+    if not config.whatsapp_enabled() or not config.WHATSAPP_WEBHOOK_SECRET:
+        raise HTTPException(503, "WhatsApp is not configured (set WAHA_URL and WHATSAPP_WEBHOOK_SECRET).")
+    body = await request.body()
+    if not whatsapp.verify_signature(body, request.headers.get("x-webhook-hmac")):
+        raise HTTPException(401, "Bad webhook signature")
+    try:
+        event = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Body is not JSON")
+    job = whatsapp.handle_event(event)
+    if job is not None:
+        background.add_task(job)  # parsing takes a while; answer WAHA right away
+    return {"ok": True}
+
+
+@app.get("/whatsapp", response_class=HTMLResponse)
+def whatsapp_page(request: Request):
+    ctx = {"enabled": config.whatsapp_enabled(), "session": None, "error": None,
+           "chat": None, "fixed_chat": bool(config.WHATSAPP_CHAT_ID), "sheets": []}
+    if ctx["enabled"]:
+        try:
+            ctx["session"] = whatsapp.get_client().session_info()
+        except whatsapp.WahaError as exc:
+            ctx["error"] = str(exc)
+        except Exception as exc:
+            ctx["error"] = f"WhatsApp bridge error: {exc}"
+        ctx["chat"] = whatsapp.active_chat()
+        with db.session() as conn:
+            ctx["sheets"] = [s for s in db.list_sheets(conn, limit=200) if s["source"] == "whatsapp"][:10]
+    ctx["secret_missing"] = ctx["enabled"] and not config.WHATSAPP_WEBHOOK_SECRET
+    return templates.TemplateResponse(request, "whatsapp.html", ctx)
+
+
+@app.get("/whatsapp/qr")
+def whatsapp_qr():
+    try:
+        png = whatsapp.get_client().qr_png()
+    except whatsapp.WahaError as exc:
+        raise HTTPException(502, str(exc))
+    if png is None:
+        raise HTTPException(404, "No QR code right now")
+    return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/whatsapp/start")
+def whatsapp_start():
+    try:
+        whatsapp.get_client().start_session()
+    except whatsapp.WahaError as exc:
+        raise HTTPException(502, str(exc))
+    return RedirectResponse("/whatsapp", status_code=303)
+
+
+@app.post("/whatsapp/logout")
+def whatsapp_logout():
+    try:
+        whatsapp.get_client().logout()
+    except whatsapp.WahaError as exc:
+        raise HTTPException(502, str(exc))
+    return RedirectResponse("/whatsapp", status_code=303)
+
+
+@app.post("/whatsapp/forget-chat")
+def whatsapp_forget_chat():
+    with db.session() as conn:
+        db.set_setting(conn, whatsapp.CHAT_SETTING, None)
+    return RedirectResponse("/whatsapp", status_code=303)

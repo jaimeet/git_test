@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}WhatsApp · Hisab{% endblock %}
+{% block content %}
+<h1>WhatsApp</h1>
+
+{% if not enabled %}
+<section class="card">
+  <p>WhatsApp isn't set up yet. Add the WhatsApp bridge container and set <code>WAHA_URL</code>, <code>WAHA_API_KEY</code> and <code>WHATSAPP_WEBHOOK_SECRET</code>. See the README section “Connect WhatsApp”.</p>
+</section>
+{% else %}
+
+{% if secret_missing %}<div class="alert error"><code>WHATSAPP_WEBHOOK_SECRET</code> is not set, so incoming messages are rejected. Set it to the same value as <code>WHATSAPP_HOOK_HMAC_KEY</code> on the bridge.</div>{% endif %}
+{% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+{% set status = session.status if session else None %}
+<section class="card">
+  <div class="row-between">
+    <h2>1. Link your WhatsApp</h2>
+    <span class="badge {{ 'confirmed' if status == 'WORKING' else '' }}">{{ {'WORKING': 'connected', 'SCAN_QR_CODE': 'waiting for scan', 'STARTING': 'starting', 'FAILED': 'failed', 'STOPPED': 'stopped'}.get(status, 'not started') if not error else 'unreachable' }}</span>
+  </div>
+
+  {% if status == 'WORKING' %}
+    <p>Connected{% if session.me %} as <strong>{{ session.me.pushName or '' }}</strong> ({{ session.me.id.split('@')[0] }}){% endif %}.</p>
+    <form method="post" action="/whatsapp/logout" onsubmit="return confirm('Unlink Hisab from your WhatsApp? You will need to scan the QR code again.')">
+      <button type="submit" class="danger">Unlink</button>
+    </form>
+  {% elif status == 'SCAN_QR_CODE' %}
+    <p>On your phone open WhatsApp → <strong>Settings → Linked devices → Link a device</strong> and scan this code.</p>
+    <img class="qr" src="/whatsapp/qr?t={{ range(100000)|random }}" alt="WhatsApp QR code">
+    <p class="muted">The code changes every few seconds; this page refreshes itself.</p>
+  {% elif status == 'STARTING' %}
+    <p>Starting… this page refreshes itself.</p>
+  {% elif not error %}
+    {% if status == 'FAILED' %}<p>The link stopped working. This usually means the bridge can't reach WhatsApp, or the phone unlinked it.</p>{% endif %}
+    <form method="post" action="/whatsapp/start"><button type="submit" class="primary">{{ 'Retry' if status == 'FAILED' else 'Start WhatsApp link' }}</button></form>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>2. Choose the hisab chat</h2>
+  {% if chat %}
+    <p>Reading photos in <code>{{ chat }}</code>{% if fixed_chat %} (set by <code>WHATSAPP_CHAT_ID</code>){% endif %}.</p>
+    {% if not fixed_chat %}
+    <form method="post" action="/whatsapp/forget-chat"><button type="submit">Stop reading this chat</button></form>
+    {% endif %}
+  {% else %}
+    <p>No chat chosen yet.</p>
+  {% endif %}
+  <p class="muted">From your phone, open the chat you use for hisab photos (a group, or “Message yourself”) and send <strong>hisab here</strong>. Hisab replies to confirm. Send <strong>hisab stop</strong> to turn it off. Only photos in that one chat are read.</p>
+</section>
+
+<section>
+  <h2>Recent WhatsApp sheets</h2>
+  {% if not sheets %}<p class="muted">None yet.</p>{% else %}
+  <ul class="sheet-list">
+    {% for s in sheets %}
+    <li><a href="/sheets/{{ s.id }}">
+      <img src="/images/{{ s.image_path }}" alt="" loading="lazy">
+      <div>
+        <strong>{{ s.sheet_date or s.created_at[:10] }}</strong>
+        <span class="badge {{ s.status }}">{{ 'saved' if s.status == 'confirmed' else ('needs attention' if s.parse_error else 'to review') }}</span>
+        <div class="muted">{{ s.entry_count }} lines · in {{ s.total_in|money }} · out {{ s.total_out|money }}</div>
+      </div>
+    </a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{% if enabled and session and session.status in ('SCAN_QR_CODE', 'STARTING') %}
+<script>setTimeout(() => location.reload(), 8000);</script>
+{% endif %}
+{% endblock %}

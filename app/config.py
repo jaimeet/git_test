@@ -16,6 +16,25 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 CURRENCY = os.environ.get("CURRENCY", "₹")
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "25"))
 
+# Public base URL of this app, used for links in WhatsApp replies, e.g. http://192.168.1.20:8092
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
+
+# WhatsApp via a WAHA container (https://github.com/devlikeapro/waha) linked to your number.
+WAHA_URL = os.environ.get("WAHA_URL", "").rstrip("/")  # e.g. http://waha:3000; empty disables WhatsApp
+WAHA_API_KEY = os.environ.get("WAHA_API_KEY", "")
+WAHA_SESSION = os.environ.get("WAHA_SESSION", "default")
+# Must equal WHATSAPP_HOOK_HMAC_KEY on the WAHA container; webhook calls without a valid signature are rejected.
+WHATSAPP_WEBHOOK_SECRET = os.environ.get("WHATSAPP_WEBHOOK_SECRET", "")
+# Optional fixed chat id. Normally you pick the chat by sending "hisab here" in it.
+WHATSAPP_CHAT_ID = os.environ.get("WHATSAPP_CHAT_ID", "")
+WHATSAPP_REPLY = os.environ.get("WHATSAPP_REPLY", "true").lower() in ("1", "true", "yes")
+# Save WhatsApp sheets straight to the ledger when nothing looks off (totals match, no unclear lines).
+WHATSAPP_AUTO_SAVE = os.environ.get("WHATSAPP_AUTO_SAVE", "false").lower() in ("1", "true", "yes")
+
+
+def whatsapp_enabled() -> bool:
+    return bool(WAHA_URL)
+
 
 def ensure_dirs() -> None:
     IMAGES_DIR.mkdir(parents=True, exist_ok=True)

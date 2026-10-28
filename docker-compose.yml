@@ -7,5 +7,32 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
+    environment:
+      WAHA_URL: http://waha:3000
     volumes:
       - ./data:/data
+
+  # WhatsApp bridge, linked to your number like WhatsApp Web. Remove this service if you don't use WhatsApp.
+  # It is only reachable from the hisab container; no port is published.
+  waha:
+    # gows-arm = ARM64 build (Raspberry Pi) of the lightweight GOWS engine. Use "gows" on an x86_64 machine.
+    image: devlikeapro/waha:${WAHA_IMAGE_TAG:-gows-arm}
+    container_name: hisab-waha
+    restart: unless-stopped
+    environment:
+      WHATSAPP_DEFAULT_ENGINE: GOWS
+      WAHA_CLIENT_DEVICE_NAME: Hisab
+      WAHA_API_KEY: ${WAHA_API_KEY}
+      WAHA_BASE_URL: http://waha:3000
+      WAHA_DASHBOARD_ENABLED: "false"
+      WHATSAPP_SWAGGER_ENABLED: "false"
+      WHATSAPP_START_SESSION: default
+      WHATSAPP_RESTART_ALL_SESSIONS: "true"
+      WHATSAPP_HOOK_URL: http://hisab:8000/whatsapp/webhook
+      WHATSAPP_HOOK_EVENTS: message.any
+      WHATSAPP_HOOK_HMAC_KEY: ${WHATSAPP_WEBHOOK_SECRET}
+      # Only download images; other media in your chats is never fetched.
+      WHATSAPP_FILES_MIMETYPES: image/
+    volumes:
+      - ./waha/sessions:/app/.sessions
+      - ./waha/media:/app/.media

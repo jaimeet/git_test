@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Ledger · Hisab{% endblock %}
+{% block content %}
+<h1>Ledger</h1>
+<form class="filters card" method="get">
+  <label>From <input type="date" name="date_from" value="{{ date_from }}"></label>
+  <label>To <input type="date" name="date_to" value="{{ date_to }}"></label>
+  <label>Search <input name="q" value="{{ q }}" placeholder="milk, Ramesh, Rent…"></label>
+  <button type="submit" class="primary">Filter</button>
+  <a class="button" href="/entries.csv?date_from={{ date_from|urlencode }}&date_to={{ date_to|urlencode }}&q={{ q|urlencode }}">Download CSV</a>
+</form>
+
+<div class="stats">
+  <div class="stat"><span class="muted">Money in</span><strong>{{ total_in|money }}</strong></div>
+  <div class="stat"><span class="muted">Money out</span><strong>{{ total_out|money }}</strong></div>
+  <div class="stat"><span class="muted">Net</span><strong>{{ (total_in - total_out)|money }}</strong></div>
+</div>
+
+{% if by_category %}
+<section class="card">
+  <h2>Spending by category</h2>
+  <table class="compact">
+    {% for name, paise in by_category %}
+    <tr><td>{{ name }}</td><td class="num">{{ paise|money }}</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
+<div class="table-wrap">
+<table class="ledger">
+  <thead><tr><th>Date</th><th>Description</th><th class="wide">Party</th><th class="wide">Category</th><th class="num">In</th><th class="num">Out</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td><a href="/sheets/{{ r.sheet_id }}">{{ r.entry_date or '—' }}</a></td>
+      <td>{{ r.description }}</td>
+      <td class="wide">{{ r.party or '' }}</td>
+      <td class="wide">{{ r.category or '' }}</td>
+      <td class="num in">{{ r.amount_paise|money if r.kind == 'in' else '' }}</td>
+      <td class="num out">{{ r.amount_paise|money if r.kind == 'out' else '' }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="muted">No saved entries match. Only sheets you have reviewed and saved appear here.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Sheet {{ sheet.sheet_date or sheet.id }} · Hisab{% endblock %}
+{% block content %}
+<div class="review">
+  <figure class="sheet-photo">
+    <a href="/images/{{ sheet.image_path }}" target="_blank"><img src="/images/{{ sheet.image_path }}" alt="Sheet photo"></a>
+    <figcaption class="muted">Tap to open full size</figcaption>
+  </figure>
+
+  <form method="post" action="/sheets/{{ sheet.id }}" class="card" id="sheet-form">
+    <div class="row-between">
+      <h1>{{ 'Saved sheet' if sheet.status == 'confirmed' else 'Review sheet' }}</h1>
+      <span class="badge {{ sheet.status }}">{{ 'saved' if sheet.status == 'confirmed' else 'draft' }}</span>
+    </div>
+
+    {% if sheet.parse_error %}
+      <div class="alert error">Couldn't read automatically: {{ sheet.parse_error }} You can still type the lines in below.</div>
+    {% endif %}
+    {% for w in warnings %}<div class="alert warn">{{ w }}</div>{% endfor %}
+
+    <label>Sheet date <input type="date" name="sheet_date" value="{{ sheet.sheet_date or '' }}"></label>
+
+    <div class="table-wrap">
+    <table class="entries" id="entries">
+      <thead>
+        <tr><th>Date</th><th>Description</th><th>Party</th><th>Category</th><th>In / Out</th><th class="num">Amount</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for e in entries %}
+        <tr class="{{ 'low' if e.confidence == 'low' else '' }}">
+          <td><input type="date" name="entry_date" value="{{ e.entry_date or '' }}"></td>
+          <td><input name="description" placeholder="Description" value="{{ e.description }}" required></td>
+          <td><input name="party" placeholder="Party" value="{{ e.party or '' }}"></td>
+          <td><input name="category" placeholder="Category" value="{{ e.category or '' }}" list="categories"></td>
+          <td>
+            <select name="kind">
+              <option value="in" {{ 'selected' if e.kind == 'in' }}>In (jama)</option>
+              <option value="out" {{ 'selected' if e.kind == 'out' }}>Out (kharch)</option>
+            </select>
+          </td>
+          <td class="num"><input name="amount" inputmode="decimal" placeholder="Amount" value="{{ e.amount_paise|rupees }}" required></td>
+          <td>
+            <input type="hidden" name="confidence" value="{{ e.confidence or '' }}">
+            <button type="button" class="icon remove" title="Remove line" aria-label="Remove line">×</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr><td colspan="5">Total in</td><td class="num" id="total-in">{{ total_in|money }}</td><td></td></tr>
+        <tr><td colspan="5">Total out</td><td class="num" id="total-out">{{ total_out|money }}</td><td></td></tr>
+        {% if sheet.written_total_in_paise is not none or sheet.written_total_out_paise is not none %}
+        <tr class="muted"><td colspan="5">Written on sheet (in / out)</td><td class="num">{{ sheet.written_total_in_paise|money or '—' }} / {{ sheet.written_total_out_paise|money or '—' }}</td><td></td></tr>
+        {% endif %}
+        {% if sheet.opening_balance_paise is not none or sheet.closing_balance_paise is not none %}
+        <tr class="muted"><td colspan="5">Opening / closing balance</td><td class="num">{{ sheet.opening_balance_paise|money or '—' }} / {{ sheet.closing_balance_paise|money or '—' }}</td><td></td></tr>
+        {% endif %}
+      </tfoot>
+    </table>
+    </div>
+    <datalist id="categories">
+      {% for c in ['Grocery','Vegetables','Milk','Rent','Electricity','Transport','Fuel','Salary','Sales','Purchase','Loan','Medical','Education','Household','Other'] %}<option value="{{ c }}">{% endfor %}
+    </datalist>
+
+    <button type="button" id="add-row">+ Add line</button>
+
+    <label>Notes <textarea name="notes" rows="2">{{ sheet.notes or '' }}</textarea></label>
+
+    <div class="actions">
+      <button type="submit" name="action" value="confirm" class="primary">Save to ledger</button>
+      <button type="submit" name="action" value="draft">Save draft</button>
+    </div>
+  </form>
+
+  <div class="actions secondary">
+    <form method="post" action="/sheets/{{ sheet.id }}/reparse" onsubmit="return confirm('Read the photo again? Your edits on this sheet will be replaced.')">
+      <button type="submit">Read photo again</button>
+    </form>
+    <form method="post" action="/sheets/{{ sheet.id }}/delete" onsubmit="return confirm('Delete this sheet and its lines?')">
+      <button type="submit" class="danger">Delete sheet</button>
+    </form>
+  </div>
+</div>
+
+<template id="row-template">
+  <tr>
+    <td><input type="date" name="entry_date"></td>
+    <td><input name="description" placeholder="Description" required></td>
+    <td><input name="party" placeholder="Party"></td>
+    <td><input name="category" placeholder="Category" list="categories"></td>
+    <td><select name="kind"><option value="in">In (jama)</option><option value="out" selected>Out (kharch)</option></select></td>
+    <td class="num"><input name="amount" inputmode="decimal" placeholder="Amount" required></td>
+    <td><input type="hidden" name="confidence" value=""><button type="button" class="icon remove" title="Remove line" aria-label="Remove line">×</button></td>
+  </tr>
+</template>
+{% endblock %}
+{% block scripts %}
+<script>
+  const tbody = document.querySelector('#entries tbody');
+  const fmt = new Intl.NumberFormat('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const cur = {{ currency|tojson }};
+  function recalc() {
+    let tin = 0, tout = 0;
+    tbody.querySelectorAll('tr').forEach(tr => {
+      const v = parseFloat((tr.querySelector('[name=amount]').value || '').replace(/,/g, '')) || 0;
+      if (tr.querySelector('[name=kind]').value === 'in') tin += v; else tout += v;
+    });
+    document.getElementById('total-in').textContent = cur + fmt.format(tin);
+    document.getElementById('total-out').textContent = cur + fmt.format(tout);
+  }
+  tbody.addEventListener('input', recalc);
+  tbody.addEventListener('change', recalc);
+  tbody.addEventListener('click', e => {
+    if (e.target.classList.contains('remove')) { e.target.closest('tr').remove(); recalc(); }
+  });
+  document.getElementById('add-row').addEventListener('click', () => {
+    const row = document.getElementById('row-template').content.cloneNode(true);
+    row.querySelector('[name=entry_date]').value = document.querySelector('[name=sheet_date]').value;
+    tbody.appendChild(row);
+    tbody.lastElementChild.querySelector('[name=description]').focus();
+  });
+</script>
+{% endblock %}

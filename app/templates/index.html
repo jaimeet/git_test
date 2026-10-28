@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Add today's sheet</h1>
+  <p class="muted">Take a clear, well-lit photo of the whole page. It is read automatically and you can fix anything before it is saved.</p>
+  <form id="upload-form" action="/upload" method="post" enctype="multipart/form-data">
+    <label class="photo-pick">
+      <input id="photo" type="file" name="photo" accept="image/*" capture="environment" required>
+      <span id="photo-label">Take photo or choose file</span>
+    </label>
+    <img id="preview" alt="" hidden>
+    <button id="upload-btn" type="submit" class="primary">Read sheet</button>
+    <p id="busy" class="muted" hidden>Reading the sheet… this can take up to a minute.</p>
+  </form>
+</section>
+
+<section>
+  <h2>Sheets</h2>
+  {% if not sheets %}
+    <p class="muted">No sheets yet.</p>
+  {% else %}
+  <ul class="sheet-list">
+    {% for s in sheets %}
+    <li>
+      <a href="/sheets/{{ s.id }}">
+        <img src="/images/{{ s.image_path }}" alt="" loading="lazy">
+        <div>
+          <strong>{{ s.sheet_date or s.created_at[:10] }}</strong>
+          <span class="badge {{ s.status }}">{{ 'saved' if s.status == 'confirmed' else ('needs attention' if s.parse_error else 'to review') }}</span>
+          <div class="muted">{{ s.entry_count }} lines · in {{ s.total_in|money }} · out {{ s.total_out|money }}</div>
+        </div>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  const input = document.getElementById('photo');
+  const preview = document.getElementById('preview');
+  input.addEventListener('change', () => {
+    const f = input.files[0];
+    if (!f) return;
+    document.getElementById('photo-label').textContent = f.name;
+    preview.src = URL.createObjectURL(f);
+    preview.hidden = false;
+  });
+  document.getElementById('upload-form').addEventListener('submit', () => {
+    document.getElementById('upload-btn').disabled = true;
+    document.getElementById('busy').hidden = false;
+  });
+</script>
+{% endblock %}

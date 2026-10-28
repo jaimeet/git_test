@@ -1,0 +1,11 @@
+services:
+  hisab:
+    build: .
+    image: hisab:latest
+    container_name: hisab
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      - ./data:/data

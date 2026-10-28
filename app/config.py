@@ -5,8 +5,17 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", "./data")).resolve()
 IMAGES_DIR = DATA_DIR / "images"
 DB_PATH = DATA_DIR / "hisab.db"
 
-# Which AI reads the photos: auto | gemini | claude. "auto" uses Gemini when GEMINI_API_KEY is set, else Claude.
+# Which AI reads the photos: auto | ollama | gemini | claude.
+# "auto" picks the first one configured, in that order: OLLAMA_URL, GEMINI_API_KEY, ANTHROPIC_API_KEY.
 AI_PROVIDER = os.environ.get("AI_PROVIDER", "auto").strip().lower()
+
+# Local model served by Ollama (https://ollama.com) on another machine, e.g. http://192.168.1.50:11434
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "").rstrip("/")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3-vl:8b")
+# Seconds to wait for one sheet. CPU-only laptops can take several minutes.
+OLLAMA_TIMEOUT = float(os.environ.get("OLLAMA_TIMEOUT", "900"))
+# Context window for the request; the photo plus a long sheet's JSON needs room.
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))
 
 # Google Gemini: free API key from https://aistudio.google.com/apikey
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")

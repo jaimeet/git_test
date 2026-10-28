@@ -1,4 +1,4 @@
-"""Turn a photo of a hisab sheet into structured entries using Gemini or Claude vision."""
+"""Turn a photo of a hisab sheet into structured entries using a local Ollama model, Gemini, or Claude."""
 
 import base64
 import io
@@ -198,22 +198,116 @@ def _gemini_error_message(exc: genai_errors.APIError) -> str:
     return f"Gemini API error {exc.code}: {exc.message}"
 
 
+def _inline_refs(schema: dict) -> dict:
+    """Ollama turns the schema into a grammar; give it one self-contained object without $ref/$defs."""
+    defs = schema.get("$defs", {})
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "$ref" in node:
+                return walk(defs[node["$ref"].split("/")[-1]])
+            return {k: walk(v) for k, v in node.items() if k != "$defs"}
+        if isinstance(node, list):
+            return [walk(v) for v in node]
+        return node
+
+    return walk(schema)
+
+
+SHEET_SCHEMA = _inline_refs(ParsedSheet.model_json_schema())
+
+
+class OllamaSheetParser:
+    """A free vision model running locally under Ollama, e.g. on a laptop on the same network."""
+
+    def __init__(self, base_url: str | None = None, model: str | None = None,
+                 transport: httpx.BaseTransport | None = None):
+        self.base_url = (base_url or config.OLLAMA_URL).rstrip("/")
+        self.model = model or config.OLLAMA_MODEL
+        self.http = httpx.Client(
+            base_url=self.base_url,
+            timeout=httpx.Timeout(config.OLLAMA_TIMEOUT, connect=10.0),
+            transport=transport,
+        )
+
+    def parse(self, image_bytes: bytes, hint: str | None = None) -> ParsedSheet:
+        data, _ = prepare_image(image_bytes)
+        body = {
+            "model": self.model,
+            "stream": False,
+            "format": SHEET_SCHEMA,
+            "options": {"temperature": 0, "num_ctx": config.OLLAMA_NUM_CTX},
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": build_instruction(hint) + "\n\nAnswer with JSON matching the given schema.",
+                    "images": [base64.standard_b64encode(data).decode("ascii")],
+                },
+            ],
+        }
+        try:
+            resp = self.http.post("/api/chat", json=body)
+        except httpx.TimeoutException as exc:
+            raise ParseError(
+                f"The local model took longer than {int(config.OLLAMA_TIMEOUT)} seconds. "
+                "Raise OLLAMA_TIMEOUT or use a smaller model."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ParseError(
+                f"Could not reach Ollama at {self.base_url}. Is the laptop on, Ollama running, "
+                "and OLLAMA_HOST set to 0.0.0.0 so other devices can connect?"
+            ) from exc
+
+        if resp.status_code != 200:
+            try:
+                detail = resp.json().get("error", "")
+            except ValueError:
+                detail = resp.text[:200]
+            if resp.status_code == 404 or "not found" in detail.lower():
+                raise ParseError(f"Model '{self.model}' isn't downloaded on the laptop. Run: ollama pull {self.model}")
+            raise ParseError(f"Ollama error {resp.status_code}: {detail}")
+
+        result = resp.json()
+        if result.get("done_reason") == "length":
+            raise ParseError("The local model ran out of room. Raise OLLAMA_NUM_CTX or photograph the sheet in halves.")
+        content = (result.get("message") or {}).get("content", "")
+        try:
+            return ParsedSheet.model_validate_json(content)
+        except ValueError as exc:
+            raise ParseError("The local model's answer wasn't valid sheet data. Try “Read photo again” or another model.") from exc
+
+
 class MissingKeyParser:
     def parse(self, image_bytes: bytes, hint: str | None = None) -> ParsedSheet:
         raise ParseError(
-            "No AI key configured. Set GEMINI_API_KEY (free from aistudio.google.com) or ANTHROPIC_API_KEY."
+            "No AI configured. Set OLLAMA_URL (free local model), GEMINI_API_KEY (free from aistudio.google.com) "
+            "or ANTHROPIC_API_KEY."
         )
 
 
 def choose_provider() -> str | None:
     provider = config.AI_PROVIDER
-    if provider in ("gemini", "claude"):
+    if provider in ("ollama", "gemini", "claude"):
         return provider
+    if config.OLLAMA_URL:
+        return "ollama"
     if config.GEMINI_API_KEY:
         return "gemini"
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         return "claude"
     return None
+
+
+def describe_provider() -> str:
+    provider = choose_provider()
+    if provider == "ollama":
+        return f"local model {config.OLLAMA_MODEL} via Ollama at {config.OLLAMA_URL or '(OLLAMA_URL not set)'}"
+    if provider == "gemini":
+        return f"Google Gemini ({config.GEMINI_MODEL})"
+    if provider == "claude":
+        return f"Anthropic Claude ({config.ANTHROPIC_MODEL})"
+    return "no AI configured"
 
 
 _parser: SheetParser | None = None
@@ -223,7 +317,9 @@ def get_parser() -> SheetParser:
     global _parser
     if _parser is None:
         provider = choose_provider()
-        if provider == "gemini":
+        if provider == "ollama":
+            _parser = OllamaSheetParser() if config.OLLAMA_URL else MissingKeyParser()
+        elif provider == "gemini":
             _parser = GeminiSheetParser() if config.GEMINI_API_KEY else MissingKeyParser()
         elif provider == "claude":
             _parser = ClaudeSheetParser()

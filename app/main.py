@@ -6,13 +6,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import config, db, whatsapp
-from .ingest import checks, money, parse_into_sheet, save_image
+from .ingest import checks, mark_reading, money, parse_into_sheet, save_image
+from .parser import describe_provider
 
 APP_DIR = Path(__file__).parent
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
@@ -59,11 +59,11 @@ def healthz():
 def home(request: Request):
     with db.session() as conn:
         sheets = db.list_sheets(conn)
-    return templates.TemplateResponse(request, "index.html", {"sheets": sheets})
+    return templates.TemplateResponse(request, "index.html", {"sheets": sheets, "provider": describe_provider()})
 
 
 @app.post("/upload")
-async def upload(photo: UploadFile = File(...)):
+async def upload(background: BackgroundTasks, photo: UploadFile = File(...)):
     if photo.content_type not in ALLOWED_TYPES:
         raise HTTPException(400, f"Unsupported file type {photo.content_type}. Upload a JPEG, PNG or WebP photo.")
     content = await photo.read()
@@ -74,8 +74,8 @@ async def upload(photo: UploadFile = File(...)):
 
     with db.session() as conn:
         sheet_id = db.create_sheet(conn, name)
-
-    await run_in_threadpool(parse_into_sheet, sheet_id, content)
+    mark_reading(sheet_id)
+    background.add_task(parse_into_sheet, sheet_id, content)  # the sheet page shows "Reading…" meanwhile
     return RedirectResponse(f"/sheets/{sheet_id}", status_code=303)
 
 
@@ -102,6 +102,7 @@ def review(request: Request, sheet_id: int):
             "total_in": total_in,
             "total_out": total_out,
             "warnings": checks(sheet, entries),
+            "provider": describe_provider(),
         },
     )
 
@@ -148,7 +149,8 @@ async def save_sheet(request: Request, sheet_id: int):
 
     action = form.get("action", "confirm")
     with db.session() as conn:
-        _sheet_or_404(conn, sheet_id)
+        if _sheet_or_404(conn, sheet_id)["reading"]:
+            raise HTTPException(409, "This sheet is still being read. Wait for it to finish, then save.")
         meta = {
             "sheet_date": sheet_date,
             "notes": (form.get("notes") or "").strip() or None,
@@ -161,12 +163,13 @@ async def save_sheet(request: Request, sheet_id: int):
 
 
 @app.post("/sheets/{sheet_id}/reparse")
-async def reparse(sheet_id: int):
+def reparse(sheet_id: int, background: BackgroundTasks):
     with db.session() as conn:
         sheet = _sheet_or_404(conn, sheet_id)
-        db.update_sheet_meta(conn, sheet_id, status="draft", confirmed_at=None)
-    content = (config.IMAGES_DIR / sheet["image_path"]).read_bytes()
-    await run_in_threadpool(parse_into_sheet, sheet_id, content)
+    if not sheet["reading"]:
+        content = (config.IMAGES_DIR / sheet["image_path"]).read_bytes()
+        mark_reading(sheet_id)
+        background.add_task(parse_into_sheet, sheet_id, content, sheet["caption"])
     return RedirectResponse(f"/sheets/{sheet_id}", status_code=303)
 
 

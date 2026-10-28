@@ -1,6 +1,7 @@
 """Shared pipeline for turning a photo into a draft sheet, used by web uploads and WhatsApp."""
 
 import logging
+import threading
 import uuid
 from datetime import date
 
@@ -23,17 +24,27 @@ def save_image(content: bytes, suffix: str = ".jpg") -> str:
     return name
 
 
+# One photo at a time: a local model on a laptop would only slow down if asked to read several at once.
+_parse_lock = threading.Lock()
+
+
+def mark_reading(sheet_id: int) -> None:
+    with db.session() as conn:
+        db.update_sheet_meta(conn, sheet_id, reading=1, parse_error=None, status="draft", confirmed_at=None)
+
+
 def parse_into_sheet(sheet_id: int, content: bytes, hint: str | None = None) -> None:
-    try:
-        parsed = get_parser().parse(content, hint=hint)
-    except Exception as exc:
-        if not isinstance(exc, ParseError):
-            log.exception("Unexpected error parsing sheet %s", sheet_id)
-        message = str(exc) if isinstance(exc, ParseError) else f"Unexpected error: {exc}"
-        with db.session() as conn:
-            db.update_sheet_meta(conn, sheet_id, parse_error=message)
-        return
-    store_parsed(sheet_id, parsed)
+    with _parse_lock:
+        try:
+            parsed = get_parser().parse(content, hint=hint)
+        except Exception as exc:
+            if not isinstance(exc, ParseError):
+                log.exception("Unexpected error parsing sheet %s", sheet_id)
+            message = str(exc) if isinstance(exc, ParseError) else f"Unexpected error: {exc}"
+            with db.session() as conn:
+                db.update_sheet_meta(conn, sheet_id, parse_error=message, reading=0)
+            return
+        store_parsed(sheet_id, parsed)
 
 
 def store_parsed(sheet_id: int, parsed: ParsedSheet) -> None:
@@ -61,6 +72,7 @@ def store_parsed(sheet_id: int, parsed: ParsedSheet) -> None:
             written_total_in_paise=db.to_paise(parsed.written_total_in),
             written_total_out_paise=db.to_paise(parsed.written_total_out),
             notes=parsed.notes,
+            reading=0,
         )
         db.replace_entries(conn, sheet_id, entries)
 

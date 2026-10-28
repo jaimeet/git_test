@@ -10,7 +10,8 @@
     </label>
     <img id="preview" alt="" hidden>
     <button id="upload-btn" type="submit" class="primary">Read sheet</button>
-    <p id="busy" class="muted" hidden>Reading the sheet… this can take up to a minute.</p>
+    <p id="busy" class="muted" hidden>Uploading…</p>
+    <p class="muted">Read by {{ provider }}.</p>
   </form>
 </section>
 
@@ -27,7 +28,7 @@
         <div>
           <strong>{{ s.sheet_date or s.created_at[:10] }}</strong>
           {% if s.source == 'whatsapp' %}<span class="badge">WhatsApp</span>{% endif %}
-          <span class="badge {{ s.status }}">{{ 'saved' if s.status == 'confirmed' else ('needs attention' if s.parse_error else 'to review') }}</span>
+          <span class="badge {{ s.status }}">{{ 'reading…' if s.reading else ('saved' if s.status == 'confirmed' else ('needs attention' if s.parse_error else 'to review')) }}</span>
           <div class="muted">{{ s.entry_count }} lines · in {{ s.total_in|money }} · out {{ s.total_out|money }}</div>
         </div>
       </a>

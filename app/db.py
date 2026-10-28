@@ -53,6 +53,7 @@ SHEET_COLUMNS = {
     "source_ref": "TEXT",                         # WhatsApp message id, used to ignore repeats
     "source_chat": "TEXT",
     "caption": "TEXT",
+    "reading": "INTEGER NOT NULL DEFAULT 0",       # 1 while the AI is reading the photo
 }
 
 
@@ -104,6 +105,11 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE sheets ADD COLUMN {name} {ddl}")
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_sheets_source_ref ON sheets(source_ref) WHERE source_ref IS NOT NULL"
+        )
+        # A restart kills any reading in progress; say so instead of showing "Reading…" forever.
+        conn.execute(
+            "UPDATE sheets SET reading = 0, parse_error = ? WHERE reading = 1",
+            ("Reading was interrupted because the app restarted. Tap “Read photo again”.",),
         )
 
 

@@ -7,6 +7,13 @@
     <figcaption class="muted">Tap to open full size</figcaption>
   </figure>
 
+  {% if sheet.reading %}
+  <section class="card reading" aria-live="polite">
+    <h1>Reading the sheet…</h1>
+    <p>Using {{ provider }}. A local model can take a few minutes; this page refreshes itself and you can leave it — the sheet will be waiting on the Sheets list.</p>
+    <div class="spinner" aria-hidden="true"></div>
+  </section>
+  {% else %}
   <form method="post" action="/sheets/{{ sheet.id }}" class="card" id="sheet-form">
     <div class="row-between">
       <h1>{{ 'Saved sheet' if sheet.status == 'confirmed' else 'Review sheet' }}</h1>
@@ -83,6 +90,7 @@
       <button type="submit" class="danger">Delete sheet</button>
     </form>
   </div>
+  {% endif %}
 </div>
 
 <template id="row-template">
@@ -98,6 +106,7 @@
 </template>
 {% endblock %}
 {% block scripts %}
+{% if sheet.reading %}<script>setTimeout(() => location.reload(), 4000);</script>{% else %}
 <script>
   const tbody = document.querySelector('#entries tbody');
   const fmt = new Intl.NumberFormat('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -123,4 +132,5 @@
     tbody.lastElementChild.querySelector('[name=description]').focus();
   });
 </script>
+{% endif %}
 {% endblock %}

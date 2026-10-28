@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from . import config, db
-from .ingest import checks, money, parse_into_sheet, save_image
+from .ingest import checks, mark_reading, money, parse_into_sheet, save_image
 
 log = logging.getLogger("hisab.whatsapp")
 
@@ -233,6 +233,7 @@ def ingest_photo(payload: dict, chat: str) -> int | None:
         (config.IMAGES_DIR / name).unlink(missing_ok=True)
         return None  # a concurrent retry of the same message got there first
 
+    mark_reading(sheet_id)
     parse_into_sheet(sheet_id, content, hint=caption)
 
     with db.session() as conn:

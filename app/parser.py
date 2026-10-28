@@ -1,4 +1,4 @@
-"""Turn a photo of a hisab sheet into structured entries using Claude's vision."""
+"""Turn a photo of a hisab sheet into structured entries using Gemini or Claude vision."""
 
 import base64
 import io
@@ -6,6 +6,10 @@ import os
 from typing import Literal, Optional, Protocol
 
 import anthropic
+import httpx
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
@@ -78,15 +82,20 @@ def prepare_image(image_bytes: bytes) -> tuple[bytes, str]:
     return out.getvalue(), "image/jpeg"
 
 
+def build_instruction(hint: str | None) -> str:
+    instruction = "Transcribe this hisab sheet."
+    if hint:
+        instruction += f"\n\nThe person who sent the photo added this caption (it may give the date or context):\n{hint}"
+    return instruction
+
+
 class ClaudeSheetParser:
     def __init__(self, client: anthropic.Anthropic | None = None):
         self.client = client or anthropic.Anthropic()
 
     def parse(self, image_bytes: bytes, hint: str | None = None) -> ParsedSheet:
         data, media_type = prepare_image(image_bytes)
-        instruction = "Transcribe this hisab sheet."
-        if hint:
-            instruction += f"\n\nThe person who sent the photo added this caption (it may give the date or context):\n{hint}"
+        instruction = build_instruction(hint)
         try:
             response = self.client.beta.messages.parse(
                 model=config.ANTHROPIC_MODEL,
@@ -139,13 +148,87 @@ class ClaudeSheetParser:
         return response.parsed_output
 
 
+class GeminiSheetParser:
+    """Google Gemini. A free API key from https://aistudio.google.com covers personal use of the Flash models."""
+
+    def __init__(self, client: genai.Client | None = None):
+        self.client = client or genai.Client(api_key=config.GEMINI_API_KEY)
+
+    def parse(self, image_bytes: bytes, hint: str | None = None) -> ParsedSheet:
+        data, media_type = prepare_image(image_bytes)
+        try:
+            response = self.client.models.generate_content(
+                model=config.GEMINI_MODEL,
+                contents=[
+                    genai_types.Part.from_bytes(data=data, mime_type=media_type),
+                    build_instruction(hint),
+                ],
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_schema=ParsedSheet,
+                ),
+            )
+        except genai_errors.APIError as exc:
+            raise ParseError(_gemini_error_message(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise ParseError("Could not reach the Gemini API. Check the Pi's internet connection.") from exc
+
+        candidate = response.candidates[0] if response.candidates else None
+        finish = candidate.finish_reason if candidate else None
+        if finish == genai_types.FinishReason.MAX_TOKENS:
+            raise ParseError("The sheet was too long to transcribe in one go. Try photographing it in halves.")
+        if response.parsed is None:
+            if finish not in (None, genai_types.FinishReason.STOP):
+                raise ParseError(f"Gemini declined to read this image ({finish.name}).")
+            if response.prompt_feedback and response.prompt_feedback.block_reason:
+                raise ParseError(f"Gemini declined to read this image ({response.prompt_feedback.block_reason.name}).")
+            raise ParseError("Gemini did not return structured entries.")
+        return response.parsed
+
+
+def _gemini_error_message(exc: genai_errors.APIError) -> str:
+    text = f"{exc.status or ''} {exc.message or ''}"
+    if exc.code in (401, 403) or "API_KEY_INVALID" in text or "API key not valid" in text:
+        return "Gemini API key is missing or invalid. Set GEMINI_API_KEY (get one free at aistudio.google.com)."
+    if exc.code == 429:
+        return "Gemini's free daily or per-minute limit was reached. Wait a bit, then use “Read photo again”."
+    if exc.code == 404:
+        return f"Gemini model '{config.GEMINI_MODEL}' was not found. Check GEMINI_MODEL."
+    return f"Gemini API error {exc.code}: {exc.message}"
+
+
+class MissingKeyParser:
+    def parse(self, image_bytes: bytes, hint: str | None = None) -> ParsedSheet:
+        raise ParseError(
+            "No AI key configured. Set GEMINI_API_KEY (free from aistudio.google.com) or ANTHROPIC_API_KEY."
+        )
+
+
+def choose_provider() -> str | None:
+    provider = config.AI_PROVIDER
+    if provider in ("gemini", "claude"):
+        return provider
+    if config.GEMINI_API_KEY:
+        return "gemini"
+    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+        return "claude"
+    return None
+
+
 _parser: SheetParser | None = None
 
 
 def get_parser() -> SheetParser:
     global _parser
     if _parser is None:
-        _parser = ClaudeSheetParser()
+        provider = choose_provider()
+        if provider == "gemini":
+            _parser = GeminiSheetParser() if config.GEMINI_API_KEY else MissingKeyParser()
+        elif provider == "claude":
+            _parser = ClaudeSheetParser()
+        else:
+            return MissingKeyParser()  # not cached, so adding a key only needs a container restart
     return _parser
 
 

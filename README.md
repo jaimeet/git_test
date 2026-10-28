@@ -7,7 +7,7 @@ Photos can also arrive through WhatsApp: post the sheet photo in a chosen chat a
 ## How it works
 
 1. **Upload.** Open the app on your phone and tap *Take photo*. The photo is kept on the Pi under `data/images/`.
-2. **Read.** The photo is straightened (EXIF rotation), resized, and sent to Claude's vision model (Anthropic API). Claude returns structured lines: description, original text, party, in (jama) or out (naam/kharch), amount, category, and a confidence level. It also returns any opening/closing balances and column totals written on the sheet. Hindi, Gujarati, Marathi and English sheets work, including Indian-script digits and `1,25,000/-` style amounts.
+2. **Read.** The photo is straightened (EXIF rotation), resized, and sent to an AI vision model: **Google Gemini** (free API key) or **Anthropic Claude** (paid). The model returns structured lines: description, original text, party, in (jama) or out (naam/kharch), amount, category, and a confidence level. It also returns any opening/closing balances and column totals written on the sheet. Hindi, Gujarati, Marathi and English sheets work, including Indian-script digits and `1,25,000/-` style amounts.
 3. **Review.** The photo appears next to an editable table. Lines the model was unsure about are highlighted. If the lines don't add up to the totals written on the sheet, or opening + in − out doesn't equal the closing balance, you get a warning. You can fix, add or remove lines.
 4. **Save.** Only sheets you have reviewed and saved appear in the **Ledger**. The ledger has date and text filters, in/out/net totals, spending by category, and CSV export.
 
@@ -15,7 +15,7 @@ If the photo can't be read (no API key, no internet, unreadable image), the shee
 
 ## Run on a Raspberry Pi 5
 
-You need Raspberry Pi OS (64-bit) or another arm64 Linux, plus an Anthropic API key from <https://console.anthropic.com>.
+You need Raspberry Pi OS (64-bit), DietPi, or another arm64 Linux, plus an AI key: either a **free Gemini key** from <https://aistudio.google.com/apikey> or an Anthropic key from <https://console.anthropic.com>.
 
 Install Docker (skip if it's already installed), then log out and back in:
 
@@ -33,7 +33,7 @@ git clone https://github.com/jaimeet/git_test.git hisab && cd hisab
 cp .env.example .env && nano .env
 ```
 
-Set `ANTHROPIC_API_KEY` in `.env`. Set `APP_PASSWORD` too if the Pi can be reached from outside your home network.
+Set `GEMINI_API_KEY` (free) or `ANTHROPIC_API_KEY` in `.env`. Set `APP_PASSWORD` too if the Pi can be reached from outside your home network.
 
 Create the data folder. The app runs as uid 1000 inside the container and takes ownership of `data/` on startup, so it doesn't matter who creates it:
 
@@ -119,10 +119,13 @@ All settings go in `.env`:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | Required for automatic reading. |
+| `GEMINI_API_KEY` | — | Free Google Gemini key for reading photos (get it at aistudio.google.com/apikey). |
+| `ANTHROPIC_API_KEY` | — | Paid alternative: Anthropic key. |
+| `AI_PROVIDER` | `auto` | `auto` uses Gemini when its key is set, else Claude. Or `gemini` / `claude`. |
+| `GEMINI_MODEL` | `gemini-flash-latest` | Gemini model; the default tracks Google's current free-tier Flash model. |
 | `APP_USERNAME` / `APP_PASSWORD` | `hisab` / empty | HTTP basic auth for the whole UI. Off when the password is empty. |
-| `ANTHROPIC_MODEL` | `claude-opus-5-5` | Model used to read sheets. |
-| `PARSE_EFFORT` | `high` | `low` / `medium` / `high` / `xhigh` / `max`. Higher effort reads messy handwriting more carefully but costs more and takes longer. |
+| `ANTHROPIC_MODEL` | `claude-opus-5-5` | Claude model used to read sheets. |
+| `PARSE_EFFORT` | `high` | Claude only. `low` / `medium` / `high` / `xhigh` / `max`. Higher effort reads messy handwriting more carefully but costs more and takes longer. |
 | `PARSE_MAX_EDGE_PX` | `2000` | Photos are shrunk to this long edge before sending. |
 | `CURRENCY` | `₹` | Symbol shown in the UI. |
 | `MAX_UPLOAD_MB` | `25` | Upload size limit. |
@@ -134,9 +137,17 @@ All settings go in `.env`:
 | `WHATSAPP_CHAT_ID` | empty | Fix the chat by id instead of using `hisab here`. |
 | `WAHA_IMAGE_TAG` | `gows-arm` | WAHA image tag; use `gows` on x86_64. |
 
+## Choosing the AI: Gemini (free) or Claude (paid)
+
+**Gemini, free.** Create a key at <https://aistudio.google.com/apikey> while signed in to your Google account, and put it in `.env` as `GEMINI_API_KEY`. No card is needed. The free tier allows a limited number of requests per minute and per day. That is plenty for a few sheets a day; your project's current limits are on AI Studio's rate-limit page. Note that a Gemini app subscription (Google AI Pro) does **not** include API access, so the free key is what Hisab uses either way. On the free tier, **Google may use what you send to improve its products**, so your sheet photos may be seen by Google.
+
+**Claude, paid.** Set `ANTHROPIC_API_KEY` instead and you pay per sheet at Anthropic's API rates. Claude tends to be stronger on messy handwriting. If both keys are set, Gemini is used unless `AI_PROVIDER=claude`.
+
+To switch, edit `.env` and run `docker compose up -d`. Sheets that already failed can be re-read with **Read photo again**.
+
 ## Privacy and cost
 
-Sheet photos are sent to the Anthropic API to be read. The photos, the database and the ledger stay on your Pi. With WhatsApp connected, the bridge only downloads images, and only photos from the chosen chat are kept or sent for reading. The bridge's session files in `./waha/sessions` give access to your WhatsApp account, so keep them private. Each sheet is one API request, and you pay for its tokens at your API account's rates. The model's safety fallback (`fallbacks: "default"`) is turned on, so in the rare case the model declines an image, the API retries on its recommended fallback model.
+Sheet photos are sent to the AI provider you chose (Google or Anthropic) to be read. The photos, the database and the ledger stay on your Pi. With WhatsApp connected, the bridge only downloads images, and only photos from the chosen chat are kept or sent for reading. The bridge's session files in `./waha/sessions` give access to your WhatsApp account, so keep them private. With Gemini's free tier there is no cost. With Claude, each sheet is one API request billed at your Anthropic account's rates; Claude's safety fallback (`fallbacks: "default"`) is on, so if the model declines an image the API retries on its recommended fallback model.
 
 ## Tips for good photos
 
@@ -166,7 +177,7 @@ DATA_DIR=./data uvicorn app.main:app --reload
 python -m pytest -q
 ```
 
-The tests use a fake parser for the web flow and drive the real Anthropic SDK against a mocked HTTP transport, so they need no API key or network.
+The tests use a fake parser for the web flow and drive the real Gemini and Anthropic SDKs against mocked HTTP transports, so they need no API key or network.
 
 Layout:
 
@@ -175,7 +186,7 @@ app/
   main.py      FastAPI routes: upload, review/save, ledger, CSV/JSON, WhatsApp pages + webhook
   ingest.py    Photo → draft sheet pipeline shared by uploads and WhatsApp
   whatsapp.py  WAHA client, webhook handling, chat commands, replies
-  parser.py    Image prep + Claude vision call with a structured-output schema
+  parser.py    Image prep + Gemini / Claude vision call with a structured-output schema
   db.py        SQLite schema and queries (amounts stored as integer paise)
   config.py    Environment settings
   templates/   Jinja pages (mobile-first)

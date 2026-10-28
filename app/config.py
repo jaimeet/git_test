@@ -5,6 +5,14 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", "./data")).resolve()
 IMAGES_DIR = DATA_DIR / "images"
 DB_PATH = DATA_DIR / "hisab.db"
 
+# Which AI reads the photos: auto | gemini | claude. "auto" uses Gemini when GEMINI_API_KEY is set, else Claude.
+AI_PROVIDER = os.environ.get("AI_PROVIDER", "auto").strip().lower()
+
+# Google Gemini: free API key from https://aistudio.google.com/apikey
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
+# "gemini-flash-latest" always points at Google's current Flash model, which the free tier covers.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5-5")
 # low | medium | high | xhigh | max — higher reads messy handwriting more carefully but costs more.
 PARSE_EFFORT = os.environ.get("PARSE_EFFORT", "high")

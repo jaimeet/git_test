@@ -35,7 +35,7 @@ cp .env.example .env && nano .env
 
 Set `ANTHROPIC_API_KEY` in `.env`. Set `APP_PASSWORD` too if the Pi can be reached from outside your home network.
 
-Create the data folder. The container runs as uid 1000, which is the default `pi` user, so the folder must be writable by that user:
+Create the data folder. The app runs as uid 1000 inside the container and takes ownership of `data/` on startup, so it doesn't matter who creates it:
 
 ```bash
 mkdir -p data
